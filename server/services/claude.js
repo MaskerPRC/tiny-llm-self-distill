@@ -92,7 +92,8 @@ class ClaudeService {
 1. 必须导出一个 async function process(request, context) 函数
 2. context 包含: { gemini, tools, log }
    - gemini.chat(input, options) - 调用大模型
-   - tools.predict(toolName, input) - 调用已注册的小模型工具
+   - tools.predict(toolName, inputString) - 调用小模型工具，input 必须是纯字符串
+     返回值: { label: "标签名", confidence: 0.0-1.0, probabilities: { "标签1": 0.x, ... } }
    - tools.list() - 获取可用工具列表
    - log(message) - 记录日志
 3. request 包含: { input, type?, metadata? }
@@ -101,11 +102,13 @@ class ClaudeService {
 6. 置信度低于阈值(0.8)时回退到大模型
 7. 保留 __validation_test__ 的特殊处理以通过验证
 8. 代码必须是完整的、可直接 require() 的 CommonJS 模块
-9. 只输出代码，不要 markdown 标记`;
+9. 只输出代码，不要 markdown 标记
+10. tools.predict 的 label 返回值是训练时的真实标签名（见工具列表的 labels 字段），代码中必须使用精确标签名判断`;
 
-    const toolDescs = newTools.map(t =>
-      `- ${t.name}: ${t.description} (架构: ${t.model_arch}, 类型: ${t.task_type})`
-    ).join('\n');
+    const toolDescs = newTools.map(t => {
+      const labelInfo = t.labels?.length ? ` | labels: [${t.labels.map(l => `"${l}"`).join(', ')}]` : '';
+      return `- ${t.name}: ${t.description} (架构: ${t.model_arch}, 类型: ${t.task_type}${labelInfo})`;
+    }).join('\n');
 
     const prompt = `当前 loop.js 代码：
 \`\`\`javascript
@@ -133,7 +136,8 @@ ${toolDescs}
 1. 必须导出一个 async function process(request, context) 函数
 2. context 包含: { gemini, tools, log }
    - gemini.chat(input, options) - 调用大模型
-   - tools.predict(toolName, input) - 调用已注册的小模型工具
+   - tools.predict(toolName, inputString) - 调用小模型工具，input 必须是纯字符串
+     返回值: { label: "标签名", confidence: 0.0-1.0, probabilities: { "标签1": 0.x, ... } }
    - tools.list() - 获取可用工具列表
    - log(message) - 记录日志
 3. request 包含: { input, type?, metadata? }
@@ -142,10 +146,14 @@ ${toolDescs}
 6. 保留 __validation_test__ 的特殊处理以通过验证：
    if (request.input === '__validation_test__') return { output: '[test ok]', tool_used: 'test', confidence: 1 };
 7. 代码必须是完整的、可直接 require() 的 CommonJS 模块
-8. 只输出纯 JavaScript 代码，不要 markdown 标记或任何注释外文字`;
+8. 只输出纯 JavaScript 代码，不要 markdown 标记或任何注释外文字
+9. tools.predict 的 label 返回值是训练时的真实标签名（见下方工具列表的 labels 字段），代码中必须使用这些精确的标签名进行判断，不要猜测或简化`;
 
     const toolDescs = allTools.length
-      ? allTools.map(t => `- ${t.name}: ${t.description} (类型: ${t.taskType})`).join('\n')
+      ? allTools.map(t => {
+          const labelInfo = t.labels?.length ? ` | labels: [${t.labels.map(l => `"${l}"`).join(', ')}]` : '';
+          return `- ${t.name}: ${t.description} (类型: ${t.taskType}${labelInfo})`;
+        }).join('\n')
       : '（无已注册工具）';
 
     const prompt = `当前 loop.js 代码：

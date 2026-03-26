@@ -28,6 +28,7 @@ router.post('/', async (req, res) => {
         list: () => toolRegistry.list(),
       },
       log: (message) => {
+        console.log(`[Loop] ${message}`);
         broadcast({ type: 'loop_log', requestId, message });
       },
     };

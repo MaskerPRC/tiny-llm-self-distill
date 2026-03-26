@@ -109,6 +109,7 @@ class ToolRegistry {
       taskType: t.taskType,
       modelArch: t.modelArch,
       accuracy: t.accuracy,
+      labels: t.config?.labels || [],
     }));
   }
 

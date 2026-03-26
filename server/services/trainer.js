@@ -75,16 +75,6 @@ class Trainer {
 
     const labelsPath = path.join(jobDir, 'labels.json');
     fs.writeFileSync(labelsPath, JSON.stringify(config.labels));
-
-    const db = getDB();
-    const insertStmt = db.prepare(
-      'INSERT INTO training_data (id, job_id, input_text, label, source) VALUES (?, ?, ?, ?, ?)'
-    );
-    db.transaction(() => {
-      for (const item of config.trainingData) {
-        insertStmt.run(uuidv4(), jobId, item.text, item.label, 'gemini');
-      }
-    })();
   }
 
   async _runTraining(jobId, jobDir, config) {
@@ -98,9 +88,9 @@ class Trainer {
     const script = path.join(this.trainingDir, scriptMap[config.modelArch] || 'train_transformer.py');
 
     const modelNameMap = {
-      tinybert: 'huawei-noah/TinyBERT_General_4L_312D',
-      minilm: 'microsoft/MiniLM-L6-H384-uncased',
-      distilbert: 'distilbert-base-uncased',
+      tinybert: process.env.MODEL_TINYBERT || 'hfl/rbt3',
+      minilm: process.env.MODEL_MINILM || 'hfl/rbt4',
+      distilbert: process.env.MODEL_DISTILBERT || 'hfl/rbt6',
     };
 
     const args = [

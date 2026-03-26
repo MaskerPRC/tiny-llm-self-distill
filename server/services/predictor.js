@@ -67,10 +67,11 @@ class Predictor {
   }
 
   async predict(input) {
+    const text = typeof input === 'object' && input !== null ? (input.text || input.input || JSON.stringify(input)) : String(input);
     if (this.modelArch === 'fasttext') {
-      return this._predictFastText(input);
+      return this._predictFastText(text);
     }
-    return this._predictOnnx(input);
+    return this._predictOnnx(text);
   }
 
   async _predictOnnx(input) {

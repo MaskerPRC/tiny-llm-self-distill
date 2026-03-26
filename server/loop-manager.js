@@ -20,6 +20,7 @@ class LoopManager {
     this._clearCache(this.loopPath);
     try {
       this.currentModule = require(this.loopPath);
+      this._loopMtime = fs.statSync(this.loopPath).mtimeMs;
       console.log(`[LoopManager] 已加载 loop.js`);
     } catch (err) {
       console.error(`[LoopManager] 加载 loop.js 失败:`, err.message);
@@ -72,9 +73,13 @@ class LoopManager {
   }
 
   async executeLoop(request, context) {
-    if (!this.currentModule || !this.currentModule.process) {
-      this._loadCurrent();
-    }
+    try {
+      const mtime = fs.statSync(this.loopPath).mtimeMs;
+      if (!this.currentModule || !this.currentModule.process || mtime !== this._loopMtime) {
+        console.log(`[LoopManager] 检测到 loop.js 变更，重新加载`);
+        this._loadCurrent();
+      }
+    } catch {}
     return this.currentModule.process(request, context);
   }
 

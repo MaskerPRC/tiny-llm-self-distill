@@ -14,11 +14,36 @@
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
         <p style="font-size:12px;color:var(--text-dim)">
-          Claude 会分析意图，自动判断是否需要蒸馏小模型，然后生成新的 loop.js 流程代码
+          GPT-5.4 分析意图，自动判断是否需要蒸馏小模型，Claude 生成新 loop.js 流程代码
         </p>
         <button class="btn btn-primary" @click="submitIntent" :disabled="intentLoading || !intentText.trim()">
           {{ intentLoading ? '进化中...' : '执行意图进化' }}
         </button>
+      </div>
+    </div>
+
+    <div v-if="pendingTasks.length" class="card" style="border-color:var(--yellow)">
+      <div class="card-title" style="color:var(--yellow)">未完成的进化任务</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div v-for="t in pendingTasks" :key="t.id" class="pending-task-row">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="tag" :class="t.status === 'failed' ? 'tag-red' : 'tag-yellow'">{{ t.status === 'failed' ? '失败' : '中断' }}</span>
+              <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.intent_text }}</span>
+            </div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:4px;display:flex;gap:12px;flex-wrap:wrap">
+              <span>停在: <code>{{ stepLabel(t.current_step) }}</code></span>
+              <span>时间: {{ t.updated_at }}</span>
+              <span v-if="t.error" style="color:var(--red)">错误: {{ t.error }}</span>
+            </div>
+          </div>
+          <button
+            class="btn btn-primary"
+            style="flex-shrink:0"
+            @click="resumeTask(t.id)"
+            :disabled="resumingId === t.id"
+          >{{ resumingId === t.id ? '恢复中...' : '继续执行' }}</button>
+        </div>
       </div>
     </div>
 
@@ -134,6 +159,8 @@ const intentText = ref('')
 const intentLoading = ref(false)
 const jobs = ref([])
 const evoLogs = ref([])
+const pendingTasks = ref([])
+const resumingId = ref(null)
 
 const distill = ref({
   taskType: '',
@@ -145,6 +172,22 @@ const distill = ref({
 const evolverLogs = computed(() =>
   store.wsLogs.filter(l => l.type?.startsWith('evolver_') || l.type?.startsWith('training_') || l.type?.startsWith('distill'))
 )
+
+const STEP_LABELS = {
+  intent_analyze: '意图分析',
+  intent_distill_arch: '模型选型',
+  intent_distill_datagen: '数据生成',
+  intent_distill_verify: '标注验证',
+  intent_distill_train: '模型训练',
+  intent_distill_register: '工具注册',
+  intent_codegen: '代码生成',
+  intent_swap: '双缓冲替换',
+  completed: '已完成',
+}
+
+function stepLabel(step) {
+  return STEP_LABELS[step] || step || '未知'
+}
 
 function statusClass(s) {
   if (s === 'completed') return 'tag-green'
@@ -190,13 +233,46 @@ async function startDistill() {
   setTimeout(() => { distilling.value = false }, 3000)
 }
 
+async function resumeTask(taskId) {
+  resumingId.value = taskId
+  try {
+    await api.resumeEvolveTask(taskId)
+  } catch (err) {
+    alert(err.message)
+  }
+  setTimeout(() => {
+    resumingId.value = null
+    loadTasks()
+  }, 3000)
+}
+
+async function loadTasks() {
+  try {
+    const res = await api.getEvolveTasks()
+    pendingTasks.value = res.tasks || []
+  } catch {}
+}
+
 async function load() {
   try {
     const [t, e] = await Promise.all([api.getTraining(), api.getEvolutionLogs()])
     jobs.value = t.jobs
     evoLogs.value = e.logs
   } catch {}
+  await loadTasks()
 }
 
 onMounted(load)
 </script>
+
+<style scoped>
+.pending-task-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(255, 193, 7, 0.06);
+  border: 1px solid rgba(255, 193, 7, 0.15);
+}
+</style>

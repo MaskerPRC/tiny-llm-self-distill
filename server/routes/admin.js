@@ -103,6 +103,42 @@ router.post('/evolve/intent', async (req, res) => {
   }
 });
 
+router.get('/evolve/tasks', (req, res) => {
+  try {
+    const { Evolver } = require('../evolver');
+    const loopManager = req.app.locals.loopManager;
+    const toolRegistry = req.app.locals.toolRegistry;
+    const evolver = new Evolver(loopManager, toolRegistry);
+    const tasks = evolver._getResumableTasks();
+    res.json({ tasks });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/evolve/resume/:id', async (req, res) => {
+  const taskId = req.params.id;
+
+  try {
+    const { Evolver } = require('../evolver');
+    const loopManager = req.app.locals.loopManager;
+    const toolRegistry = req.app.locals.toolRegistry;
+    const evolver = new Evolver(loopManager, toolRegistry);
+
+    const task = evolver._getTask(taskId);
+    if (!task) return res.status(404).json({ error: '任务不存在' });
+    if (task.status === 'completed') return res.status(400).json({ error: '任务已完成' });
+
+    res.json({ message: `正在恢复任务: ${task.intent_text}`, taskId });
+
+    evolver.evolveWithIntent(task.intent_text, taskId).catch(err => {
+      console.error(`[Resume] 恢复进化失败:`, err.message);
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/evolve/distill', async (req, res) => {
   const { taskType, description, labels, modelArch, dataCount } = req.body;
 

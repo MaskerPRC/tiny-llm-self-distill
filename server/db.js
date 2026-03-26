@@ -78,6 +78,18 @@ function initDB() {
       result TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS evolution_tasks (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      intent_text TEXT,
+      status TEXT DEFAULT 'running',
+      current_step TEXT,
+      state TEXT,
+      error TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   return db;

@@ -32,6 +32,8 @@ export default {
   triggerEvolve: () => request('/admin/evolve', { method: 'POST' }),
   evolveIntent: (intent) => request('/admin/evolve/intent', { method: 'POST', body: { intent } }),
   distill: (params) => request('/admin/evolve/distill', { method: 'POST', body: params }),
+  getEvolveTasks: () => request('/admin/evolve/tasks'),
+  resumeEvolveTask: (id) => request(`/admin/evolve/resume/${id}`, { method: 'POST' }),
 
   getTraining: () => request('/admin/training'),
   getTrainingJob: (id) => request(`/admin/training/${id}`),

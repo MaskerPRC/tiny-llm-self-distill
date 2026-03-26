@@ -145,10 +145,15 @@ class Evolver {
     const finalLabels = archConfig.labels || labels;
     const trainConfig = archConfig.training_config || {};
 
-    // Step B: Gemini 生成训练数据（只生成一次，所有重试共用）
-    this._log(distillId, `📝 B. Gemini 生成 ${dataCount} 条训练数据...`);
-    const trainingData = await this.gemini.generateTrainingData(description, finalLabels, dataCount);
-    this._log(distillId, `   生成了 ${trainingData.length} 条数据`);
+    // Step B: Flash 2.5 分批生成训练数据（只生成一次，所有重试共用）
+    this._log(distillId, `📝 B. Flash 2.5 分批生成 ${dataCount} 条训练数据...`);
+    const trainingData = await this.gemini.generateTrainingData(
+      description, finalLabels, dataCount,
+      (progress) => {
+        this._log(distillId, `   [${progress.label}] ${progress.generated}/${progress.target} 条 | 总计 ${progress.totalGenerated}/${progress.totalTarget}`);
+      }
+    );
+    this._log(distillId, `   生成完毕: 共 ${trainingData.length} 条（去重后）`);
 
     if (trainingData.length < 100) {
       throw new Error(`训练数据不足 (${trainingData.length} < 100)`);

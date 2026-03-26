@@ -4,6 +4,7 @@ const router = express.Router();
 router.get('/', (req, res) => {
   res.json({
     gemini_model: process.env.GEMINI_MODEL || 'google/gemini-3.1-pro-preview',
+    datagen_model: process.env.DATAGEN_MODEL || process.env.GEMINI_MODEL || 'google/gemini-3.1-pro-preview',
     claude_model: process.env.CLAUDE_MODEL || 'anthropic/claude-opus-4.6',
     intent_model: process.env.INTENT_MODEL || process.env.SELECTOR_MODEL || 'openai/gpt-5.4',
     selector_model: process.env.SELECTOR_MODEL || 'openai/gpt-5.4',

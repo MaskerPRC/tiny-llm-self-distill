@@ -5,10 +5,18 @@ class GeminiService {
     this.apiBase = process.env.GEMINI_API_BASE || 'https://openrouter.ai/api/v1';
     this.apiKey = process.env.GEMINI_API_KEY;
     this.model = process.env.GEMINI_MODEL || 'google/gemini-3.1-pro-preview';
+
+    this.datagenApiBase = process.env.DATAGEN_API_BASE || this.apiBase;
+    this.datagenApiKey = process.env.DATAGEN_API_KEY || this.apiKey;
+    this.datagenModel = process.env.DATAGEN_MODEL || this.model;
   }
 
   async chat(userMessage, options = {}) {
-    const { systemPrompt, temperature = 0.7, maxTokens = 4096, jsonMode = false } = options;
+    const { systemPrompt, temperature = 0.7, maxTokens = 4096, jsonMode = false, useDatagen = false } = options;
+
+    const apiBase = useDatagen ? this.datagenApiBase : this.apiBase;
+    const apiKey = useDatagen ? this.datagenApiKey : this.apiKey;
+    const model = useDatagen ? this.datagenModel : this.model;
 
     const messages = [];
     if (systemPrompt) {
@@ -17,7 +25,7 @@ class GeminiService {
     messages.push({ role: 'user', content: userMessage });
 
     const body = {
-      model: this.model,
+      model,
       messages,
       temperature,
       max_tokens: maxTokens,
@@ -27,9 +35,9 @@ class GeminiService {
       body.response_format = { type: 'json_object' };
     }
 
-    const response = await axios.post(`${this.apiBase}/chat/completions`, body, {
+    const response = await axios.post(`${apiBase}/chat/completions`, body, {
       headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
         'HTTP-Referer': 'https://tinybert-pipeline.local',
       },
@@ -61,6 +69,7 @@ class GeminiService {
         systemPrompt,
         jsonMode: true,
         temperature: 0.1,
+        useDatagen: true,
       });
 
       try {
@@ -75,7 +84,7 @@ class GeminiService {
           try {
             const single = await this.chat(
               `请对以下文本进行分类标注，只返回标签名：\n"${text}"`,
-              { systemPrompt, temperature: 0.1 }
+              { systemPrompt, temperature: 0.1, useDatagen: true }
             );
             results.push({ text, label: single.trim() });
           } catch (err) {
@@ -89,46 +98,115 @@ class GeminiService {
   }
 
   /**
-   * 生成训练数据：给定任务描述和标签，让 Gemini 合成训练样本
+   * 生成训练数据：所有标签并发生成，每个标签内部也并发分批
    */
-  async generateTrainingData(taskDescription, labels, count) {
+  async generateTrainingData(taskDescription, labels, count, onProgress) {
+    const BATCH_SIZE = 50;
+    const CONCURRENCY = parseInt(process.env.DATAGEN_CONCURRENCY) || 10;
     const perLabel = Math.ceil(count / labels.length);
-    const allData = [];
+    const seenTexts = new Set();
 
-    for (const label of labels) {
-      const prompt = `你是一个训练数据生成专家。请为以下NLP分类任务生成训练数据。
+    const labelResults = await Promise.all(
+      labels.map(label => this._generateForLabel(
+        taskDescription, label, perLabel, BATCH_SIZE, CONCURRENCY, seenTexts, onProgress,
+        () => labels.reduce((sum, l) => sum, 0)
+      ))
+    );
 
-任务描述：${taskDescription}
-目标标签：${label}
-生成数量：${perLabel} 条
+    const allData = labelResults.flat();
+    console.log(`[Datagen] 数据生成完毕: 共 ${allData.length}/${count} 条，去重文本 ${seenTexts.size} 条`);
+    return allData;
+  }
 
-要求：
-1. 生成多样化的、真实的文本样本
-2. 包含各种表达方式、语气、长度
-3. 包含一些边界案例和容易混淆的样本
-4. 返回 JSON 数组，每个元素有 text 和 label 字段
+  async _generateForLabel(taskDescription, label, target, batchSize, concurrency, seenTexts, onProgress, _) {
+    const labelData = [];
+    let consecutiveEmpty = 0;
+    const maxEmptyRounds = 3;
 
-只返回 JSON，不要其他文字。`;
+    while (labelData.length < target && consecutiveEmpty < maxEmptyRounds) {
+      const remaining = target - labelData.length;
+      const batchCount = Math.min(batchSize, remaining);
+      const parallelCount = Math.min(
+        concurrency,
+        Math.ceil(remaining / batchSize)
+      );
 
-      const response = await this.chat(prompt, {
-        jsonMode: true,
-        temperature: 0.9,
-        maxTokens: 8192,
-      });
+      const batchPromises = [];
+      for (let i = 0; i < parallelCount; i++) {
+        const batchIndex = Math.floor(labelData.length / batchSize) + i + 1;
+        batchPromises.push(this._generateOneBatch(taskDescription, label, batchCount, batchIndex, labelData.length));
+      }
 
-      try {
-        const parsed = JSON.parse(response);
-        const items = Array.isArray(parsed) ? parsed : (parsed.data || parsed.results || []);
-        allData.push(...items.map(item => ({
-          text: item.text,
-          label: label,
-        })));
-      } catch {
-        console.error(`[Gemini] 生成标签 "${label}" 的数据解析失败`);
+      const batchResults = await Promise.allSettled(batchPromises);
+
+      let roundAdded = 0;
+      for (const result of batchResults) {
+        if (result.status !== 'fulfilled' || !result.value) continue;
+
+        for (const item of result.value) {
+          if (!item.text || typeof item.text !== 'string') continue;
+          const text = item.text.trim();
+          if (text.length === 0) continue;
+
+          if (seenTexts.has(text)) continue;
+          seenTexts.add(text);
+
+          labelData.push({ text, label });
+          roundAdded++;
+          if (labelData.length >= target) break;
+        }
+        if (labelData.length >= target) break;
+      }
+
+      if (roundAdded === 0) {
+        consecutiveEmpty++;
+      } else {
+        consecutiveEmpty = 0;
+      }
+
+      if (onProgress) {
+        onProgress({ label, generated: labelData.length, target, totalGenerated: labelData.length, totalTarget: target });
       }
     }
 
-    return allData;
+    if (consecutiveEmpty >= maxEmptyRounds) {
+      console.warn(`[Datagen] 标签 "${label}" 连续 ${maxEmptyRounds} 轮无新数据，停止（${labelData.length}/${target}）`);
+    }
+    console.log(`[Datagen] 标签 "${label}" 完成: ${labelData.length}/${target} 条`);
+    return labelData;
+  }
+
+  async _generateOneBatch(taskDescription, label, batchCount, batchIndex, existingCount) {
+    const prompt = `你是一个训练数据生成专家。请为以下NLP分类任务生成 ${batchCount} 条训练数据。
+
+任务描述：${taskDescription}
+目标标签：${label}
+批次编号：${batchIndex}（用于多样性种子，请尽量让不同批次的数据风格、场景差异化）
+
+要求：
+1. 生成多样化的、真实的文本样本
+2. 包含各种表达方式、语气、长度、场景
+3. 包含一些边界案例和容易混淆的样本
+4. 每条文本必须不同，不要重复
+5. 返回 JSON 数组，每个元素格式: {"text": "文本内容", "label": "${label}"}
+6. 严格生成 ${batchCount} 条
+
+只返回 JSON 数组，不要其他文字。`;
+
+    try {
+      const response = await this.chat(prompt, {
+        jsonMode: true,
+        temperature: 0.95,
+        maxTokens: 8192,
+        useDatagen: true,
+      });
+
+      const parsed = JSON.parse(response);
+      return Array.isArray(parsed) ? parsed : (parsed.data || parsed.results || []);
+    } catch (err) {
+      console.error(`[Datagen] 标签 "${label}" 批次 ${batchIndex} 失败: ${err.message}`);
+      return [];
+    }
   }
 }
 

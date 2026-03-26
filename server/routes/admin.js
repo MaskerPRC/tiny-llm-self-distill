@@ -83,6 +83,26 @@ router.post('/evolve', async (req, res) => {
   }
 });
 
+router.post('/evolve/intent', async (req, res) => {
+  const { intent } = req.body;
+  if (!intent) return res.status(400).json({ error: '缺少 intent 字段' });
+
+  try {
+    const { Evolver } = require('../evolver');
+    const loopManager = req.app.locals.loopManager;
+    const toolRegistry = req.app.locals.toolRegistry;
+    const evolver = new Evolver(loopManager, toolRegistry);
+
+    res.json({ message: `意图进化已启动: "${intent}"` });
+
+    evolver.evolveWithIntent(intent).catch(err => {
+      console.error(`[Intent] 意图进化失败:`, err.message);
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/evolve/distill', async (req, res) => {
   const { taskType, description, labels, modelArch, dataCount } = req.body;
 

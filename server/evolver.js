@@ -242,6 +242,70 @@ class Evolver {
   }
 
   /**
+   * 根据用户自然语言意图进化
+   * 例如："在处理最前面加一个恶意识别，如果是恶意的，直接返回'请好好说话'"
+   */
+  async evolveWithIntent(intentText) {
+    const intentId = uuidv4();
+    this._broadcast('intent_start', { id: intentId, intent: intentText });
+    this._log(intentId, `🎯 收到进化意图: "${intentText}"`);
+
+    // Step 1: Claude 分析意图
+    this._log(intentId, '🧠 Step 1: Claude 分析意图...');
+    const currentCode = this.loopManager.getCurrentCode();
+    const currentTools = this.toolRegistry.list();
+    const plan = await this.claude.analyzeIntent(intentText, currentTools, currentCode);
+
+    this._log(intentId, `   分析结果: ${plan.summary}`);
+    this._log(intentId, `   需要训练模型: ${plan.needs_model ? '是' : '否'}`);
+
+    // Step 2: 如果需要小模型，先蒸馏
+    let newToolName = null;
+    if (plan.needs_model && plan.model_task) {
+      this._log(intentId, `\n🏭 Step 2: 蒸馏 "${plan.model_task.task_type}"...`);
+      try {
+        const distillResult = await this.distillTask({
+          taskType: plan.model_task.task_type,
+          description: plan.model_task.description,
+          labels: plan.model_task.labels,
+          dataCount: parseInt(process.env.TRAIN_DATA_COUNT) || 5000,
+        });
+        newToolName = distillResult.toolName;
+        this._log(intentId, `   蒸馏完成: ${newToolName} (acc=${distillResult.metrics.accuracy?.toFixed(4)})`);
+      } catch (err) {
+        this._log(intentId, `   ⚠️ 蒸馏失败: ${err.message}，将尝试纯代码实现`);
+      }
+    } else {
+      this._log(intentId, '\n📝 Step 2: 无需训练模型，跳过蒸馏');
+    }
+
+    // Step 3: Claude 根据意图指令生成新 loop.js
+    this._log(intentId, '\n🔧 Step 3: Claude 生成新流程代码...');
+    const allTools = this.toolRegistry.list();
+    const reason = `用户意图: ${plan.summary}`;
+
+    const newCode = await this.claude.generateLoopCodeWithIntent(
+      currentCode, allTools, plan.loop_instruction, reason
+    );
+
+    // Step 4: 双缓冲替换
+    this._log(intentId, '🔄 Step 4: 双缓冲替换...');
+    try {
+      const result = await this.loopManager.updateLoop(newCode, `意图进化: ${plan.summary}`);
+      this._log(intentId, `✅ Loop 已更新到 v${result.version}`);
+    } catch (err) {
+      this._log(intentId, `❌ Loop 更新失败: ${err.message}`);
+      throw err;
+    }
+
+    this._saveEvolutionLog(intentId, { intent: intentText, plan }, null, 'intent_evolve', 'success');
+    this._broadcast('intent_complete', { id: intentId, version: this.loopManager.getCurrentVersion() });
+    this._log(intentId, `\n✅ 意图进化完成!`);
+
+    return { status: 'success', plan, newToolName, version: this.loopManager.getCurrentVersion() };
+  }
+
+  /**
    * 分析请求日志
    */
   async _analyzePatterns() {

@@ -30,6 +30,7 @@ export default {
   rollbackLoop: (versionId) => request('/admin/loop/rollback', { method: 'POST', body: { versionId } }),
 
   triggerEvolve: () => request('/admin/evolve', { method: 'POST' }),
+  evolveIntent: (intent) => request('/admin/evolve/intent', { method: 'POST', body: { intent } }),
   distill: (params) => request('/admin/evolve/distill', { method: 'POST', body: params }),
 
   getTraining: () => request('/admin/training'),

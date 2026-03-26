@@ -2,14 +2,34 @@
   <div>
     <h2 class="page-title">自进化引擎</h2>
 
+    <div class="card" style="border-color:var(--accent)">
+      <div class="card-title">意图进化 — 用自然语言定义进化方向</div>
+      <div style="display:flex;gap:8px">
+        <textarea
+          v-model="intentText"
+          placeholder="用自然语言描述你想让系统增加的能力，例如：&#10;• 在处理最前面加一个恶意识别，如果是恶意的，直接返回「请好好说话」&#10;• 识别用户是否在问天气，如果是则直接返回「暂不支持天气查询」&#10;• 加一个语言检测，英文输入用英文回复"
+          style="min-height:80px;flex:1"
+          :disabled="intentLoading"
+        ></textarea>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <p style="font-size:12px;color:var(--text-dim)">
+          Claude 会分析意图，自动判断是否需要蒸馏小模型，然后生成新的 loop.js 流程代码
+        </p>
+        <button class="btn btn-primary" @click="submitIntent" :disabled="intentLoading || !intentText.trim()">
+          {{ intentLoading ? '进化中...' : '执行意图进化' }}
+        </button>
+      </div>
+    </div>
+
     <div class="stat-grid" style="margin-bottom:20px">
       <div class="stat-card">
         <div class="stat-value" style="font-size:20px">
-          <button class="btn btn-primary" @click="triggerEvolve" :disabled="evolving">
+          <button class="btn btn-ghost" @click="triggerEvolve" :disabled="evolving">
             {{ evolving ? '进化中...' : '触发自动进化' }}
           </button>
         </div>
-        <div class="stat-label">分析请求日志 → 识别模式 → 蒸馏 → 更新流程</div>
+        <div class="stat-label">自动分析请求日志 → 识别模式 → 蒸馏 → 更新流程</div>
       </div>
     </div>
 
@@ -110,6 +130,8 @@ import api from '../api'
 const store = useAppStore()
 const evolving = ref(false)
 const distilling = ref(false)
+const intentText = ref('')
+const intentLoading = ref(false)
 const jobs = ref([])
 const evoLogs = ref([])
 
@@ -129,6 +151,18 @@ function statusClass(s) {
   if (s === 'training' || s === 'preparing') return 'tag-yellow'
   if (s === 'failed' || s === 'aborted') return 'tag-red'
   return 'tag-blue'
+}
+
+async function submitIntent() {
+  if (!intentText.value.trim()) return
+  intentLoading.value = true
+  try {
+    await api.evolveIntent(intentText.value.trim())
+    intentText.value = ''
+  } catch (err) {
+    alert(err.message)
+  }
+  setTimeout(() => { intentLoading.value = false }, 3000)
 }
 
 async function triggerEvolve() {

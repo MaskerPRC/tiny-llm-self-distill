@@ -227,12 +227,11 @@ class GeminiService {
       for (const result of results) {
         if (result.status !== 'fulfilled' || !result.value) continue;
         const text = result.value.text;
-        if (!text || typeof text !== 'string') continue;
-        const trimmed = text.trim();
-        if (trimmed.length === 0 || seenTexts.has(trimmed)) continue;
+        const cleaned = this._cleanText(text);
+        if (!cleaned || seenTexts.has(cleaned)) continue;
 
-        seenTexts.add(trimmed);
-        const item = { text: trimmed, label };
+        seenTexts.add(cleaned);
+        const item = { text: cleaned, label };
         labelData.push(item);
         roundAdded++;
         totalProgress.generated++;
@@ -270,63 +269,91 @@ class GeminiService {
   }
 
   /**
-   * 单条数据两步生成：
-   * Step 1 - 自由推理：基于指定场景和风格深度思考后生成一条真实文本
-   * Step 2 - 结构化提取：从推理结果中提取干净的 JSON
+   * 单条数据生成：LLM 推理生成 + 正则提取（不再用第二次 LLM 调用）
+   * API 调用：每条数据只调一次
    */
   async _generateOneItem(taskDescription, label, allLabels, index, scene, style) {
-    const reasoningPrompt = `你是一个高质量NLP训练数据的生成专家。请为以下分类任务生成一条训练样本。
+    const prompt = `你是一个高质量NLP训练数据生成专家。
 
+任务：生成一条用于文本分类模型训练的样本。
+分类目标：${allLabels.map(l => `"${l}"`).join(' / ')}
 任务描述：${taskDescription}
-所有标签：${allLabels.join(', ')}
-本条目标标签：${label}
+本条标签：${label}
+场景：${scene}
+风格：${style}
 
-★ 强制约束（必须遵守）：
-- 场景：${scene}
-- 风格：${style}
-- 序号：${index}
+请先用2-3句话简短思考这个人物和场景，然后直接给出最终文本。
 
-请按以下步骤思考：
-1. 在「${scene}」场景下，一个真实的人会怎么表达属于「${label}」类别的内容？
-2. 用「${style}」的风格来写，注意语气、词汇和句式要匹配这个风格。
-3. 确保文本独特，不要写"太典型"的例子，尽量贴近真实场景。
-4. 写出最终的文本样本。
+输出格式（必须严格遵守）：
+THINKING: （2-3句简短思考）
+RESULT: （最终的文本样本，至少10个字，不包含任何编号、标签名、场景名）`;
 
-请详细推理，最后一行写出生成的文本样本（用【】包裹）。`;
-
-    const reasoning = await this.chat(reasoningPrompt, {
+    const response = await this.chat(prompt, {
       temperature: 0.95,
-      maxTokens: 1024,
+      maxTokens: 800,
       useDatagen: true,
     });
 
-    const extractPrompt = `从以下推理过程中，提取最终生成的训练文本样本。
+    const extracted = this._extractResult(response);
+    if (extracted) return { text: extracted, label };
+    return null;
+  }
 
-推理过程：
-${reasoning}
+  _extractResult(response) {
+    if (!response || typeof response !== 'string') return null;
 
-要求：
-- 提取推理中最终确定的文本样本（通常在【】中或在最后）
-- 如果推理中有多个候选，取最终选定的那个
-- 返回 JSON：{"text": "提取的文本", "label": "${label}"}
-- text 中不要包含【】符号
-- 只返回 JSON`;
-
-    const structured = await this.chat(extractPrompt, {
-      jsonMode: true,
-      temperature: 0.1,
-      maxTokens: 512,
-      useDatagen: true,
-    });
-
-    try {
-      const parsed = JSON.parse(structured);
-      return { text: parsed.text, label };
-    } catch {
-      const bracketMatch = reasoning.match(/【(.+?)】/);
-      if (bracketMatch) return { text: bracketMatch[1], label };
-      return null;
+    const resultMatch = response.match(/RESULT:\s*([\s\S]+?)$/i);
+    if (resultMatch) {
+      const cleaned = this._cleanText(resultMatch[1]);
+      if (cleaned) return cleaned;
     }
+
+    const angleMatch = response.match(/<<<([\s\S]+?)>>>/);
+    if (angleMatch) {
+      const cleaned = this._cleanText(angleMatch[1]);
+      if (cleaned) return cleaned;
+    }
+
+    const bracketMatch = response.match(/【([\s\S]+?)】/);
+    if (bracketMatch) {
+      const cleaned = this._cleanText(bracketMatch[1]);
+      if (cleaned) return cleaned;
+    }
+
+    const lines = response.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length > 0) {
+      const lastLine = this._cleanText(lines[lines.length - 1]);
+      if (lastLine && lastLine.length >= 10) return lastLine;
+    }
+
+    return null;
+  }
+
+  _cleanText(text) {
+    if (!text || typeof text !== 'string') return null;
+
+    let cleaned = text.trim();
+    cleaned = cleaned.replace(/^<<<|>>>$/g, '');
+    cleaned = cleaned.replace(/^【|】$/g, '');
+    cleaned = cleaned.replace(/^"([\s\S]+)"$/, '$1');
+    cleaned = cleaned.replace(/^\d+[\.\、\:\：\s\|]+/g, '');
+    cleaned = cleaned.replace(/^序号[\s\：:]*\d*[\s\.\、\:\：\|]*/gi, '');
+    cleaned = cleaned.replace(/^RESULT:\s*/i, '');
+    cleaned = cleaned.replace(/^THINKING:[\s\S]*?RESULT:\s*/i, '');
+    cleaned = cleaned.replace(/^(malicious_or_abusive|malicious_or_hostile|benign|allow|block|hostile|malicious)[\s\|\\t:]*/gi, '');
+    cleaned = cleaned.replace(/场景[\：:][^\n]*/g, '');
+    cleaned = cleaned.replace(/风格[\：:][^\n]*/g, '');
+    cleaned = cleaned.replace(/标签[\：:][^\n]*/g, '');
+    cleaned = cleaned.replace(/文本[\：:]\s*/g, '');
+    cleaned = cleaned.replace(/>>>[^<]*$/g, '');
+    cleaned = cleaned.replace(/<<<[^>]*$/g, '');
+    cleaned = cleaned.trim();
+
+    if (cleaned.length < 8) return null;
+    if (/^[\d\s序号：:\.、\|]+$/.test(cleaned)) return null;
+    if (/^(包裹|符合|元信息|最终|输出|确认|草稿)/i.test(cleaned)) return null;
+
+    return cleaned;
   }
 }
 

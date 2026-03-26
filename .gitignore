@@ -1,0 +1,10 @@
+node_modules/
+data/
+*.db
+.env
+__pycache__/
+*.pyc
+*.onnx
+*.pt
+*.bin
+ref_yolo_pipeline/

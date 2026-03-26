@@ -119,7 +119,7 @@ class Trainer {
     return new Promise((resolve, reject) => {
       const proc = spawn(this.pythonPath, args, {
         cwd: this.trainingDir,
-        env: { ...process.env },
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       });
 
       this.activeJobs.set(jobId, proc);

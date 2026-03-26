@@ -7,8 +7,12 @@ import argparse
 import json
 import os
 import sys
+import io
 import numpy as np
 from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -149,7 +153,7 @@ def train(args):
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             model.save_pretrained(best_model_path)
-            print(f"  ✓ 最佳模型已保存 (Val Acc: {val_acc:.4f})")
+            print(f"  [BEST] Best model saved (Val Acc: {val_acc:.4f})")
 
     print(f"\n[训练] 最佳验证准确率: {best_val_acc:.4f}")
 

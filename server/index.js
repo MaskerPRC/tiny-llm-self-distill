@@ -36,7 +36,7 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/config', configRoutes);
 
-app.get('/', (req, res) => {
+app.get('/api/status', (req, res) => {
   res.json({
     name: 'TinyBERT Pipeline - Self-Evolving Agent Service',
     version: '1.0.0',
@@ -44,6 +44,21 @@ app.get('/', (req, res) => {
     loop_version: loopManager.getCurrentVersion(),
     tools_count: toolRegistry.getToolCount(),
   });
+});
+
+app.use(express.static(path.join(__dirname, '..', 'client', 'dist')));
+app.get('*', (req, res) => {
+  const indexPath = path.join(__dirname, '..', 'client', 'dist', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.json({
+      name: 'TinyBERT Pipeline',
+      message: '前端未构建，请运行 cd client && npm run build',
+      loop_version: loopManager.getCurrentVersion(),
+      tools_count: toolRegistry.getToolCount(),
+    });
+  }
 });
 
 const server = app.listen(PORT, () => {

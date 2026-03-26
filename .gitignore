@@ -8,3 +8,5 @@ __pycache__/
 *.pt
 *.bin
 ref_yolo_pipeline/
+.idea
+client/dist

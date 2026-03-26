@@ -4,8 +4,11 @@
   "description": "自迭代LLM驱动的Agent服务系统 - 自适应蒸馏、训练、工具生成与流程自修改",
   "main": "server/index.js",
   "scripts": {
-    "dev": "node server/index.js",
-    "setup": "npm install && pip install -r training/requirements.txt",
+    "dev:server": "node server/index.js",
+    "dev:client": "cd client && npm run dev",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "build": "cd client && npm run build",
+    "setup": "npm install && cd client && npm install && pip install -r training/requirements.txt",
     "train:deps": "pip install -r training/requirements.txt"
   },
   "dependencies": {
@@ -17,6 +20,7 @@
     "dotenv": "^16.4.5",
     "uuid": "^10.0.0",
     "ws": "^8.18.0",
-    "onnxruntime-node": "^1.20.0"
+    "onnxruntime-node": "^1.20.0",
+    "concurrently": "^9.0.1"
   }
 }

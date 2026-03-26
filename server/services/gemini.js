@@ -90,50 +90,83 @@ class GeminiService {
    * 批量标注：给定输入文本数组和任务描述，使用 Gemini 进行标注
    */
   async labelBatch(texts, taskDescription, labels) {
-    const systemPrompt = `你是一个数据标注专家。请对以下文本进行分类标注。
-
-任务描述：${taskDescription}
-可用标签：${labels.join(', ')}
-
-请对每条文本返回一个标签。严格按照JSON数组格式返回，每个元素包含 text 和 label 字段。`;
+    const labelsStr = labels.join(', ');
+    const systemPrompt = `你是数据标注专家。任务：${taskDescription}\n可用标签：${labelsStr}\n对每条文本返回标签。只输出纯JSON数组，不要用markdown代码块包裹，不要添加任何解释文字。格式：[{"text":"原文","label":"标签"},...]`;
 
     const batchSize = 20;
     const results = [];
 
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
-      const userMessage = `请标注以下 ${batch.length} 条文本:\n${batch.map((t, idx) => `${idx + 1}. ${t}`).join('\n')}`;
+      const batchNum = Math.floor(i / batchSize) + 1;
+      const userMessage = `标注以下 ${batch.length} 条文本，只返回JSON数组:\n${batch.map((t, idx) => `${idx + 1}. ${t}`).join('\n')}`;
 
-      const response = await this.chat(userMessage, {
-        systemPrompt,
-        jsonMode: true,
-        temperature: 0.1,
-        useDatagen: true,
-      });
-
+      let batchOk = false;
       try {
-        const parsed = JSON.parse(response);
-        const items = parsed.results || parsed.data || parsed;
-        if (Array.isArray(items)) {
+        const response = await this.chat(userMessage, {
+          systemPrompt,
+          temperature: 0.1,
+          useDatagen: true,
+        });
+
+        const items = this._extractJsonArray(response);
+        if (items && items.length > 0) {
           results.push(...items);
+          batchOk = true;
         }
-      } catch {
-        console.error(`[Gemini] 批次 ${i / batchSize + 1} 标注解析失败，尝试逐条处理`);
+      } catch (err) {
+        console.error(`[Gemini] 批次 ${batchNum} API调用失败: ${err.message}`);
+      }
+
+      if (!batchOk) {
+        console.warn(`[Gemini] 批次 ${batchNum} JSON解析失败，逐条标注`);
         for (const text of batch) {
           try {
             const single = await this.chat(
-              `请对以下文本进行分类标注，只返回标签名：\n"${text}"`,
-              { systemPrompt, temperature: 0.1, useDatagen: true }
+              `对以下文本分类，只返回一个标签名（${labelsStr}），不要返回任何其他内容：\n"${text}"`,
+              { temperature: 0.1, useDatagen: true }
             );
-            results.push({ text, label: single.trim() });
+            const label = this._matchLabel(single.trim(), labels);
+            results.push({ text, label });
           } catch (err) {
-            results.push({ text, label: labels[0], error: err.message });
+            results.push({ text, label: labels[0] });
           }
         }
       }
     }
 
     return results;
+  }
+
+  _extractJsonArray(raw) {
+    if (!raw || typeof raw !== 'string') return null;
+
+    const fenced = raw.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+    const str = fenced ? fenced[1].trim() : raw.trim();
+
+    const arrMatch = str.match(/\[[\s\S]*\]/);
+    if (!arrMatch) return null;
+
+    try {
+      const arr = JSON.parse(arrMatch[0]);
+      if (Array.isArray(arr)) return arr;
+    } catch {}
+
+    try {
+      const obj = JSON.parse(str);
+      const arr = obj.results || obj.data || obj.items || obj;
+      if (Array.isArray(arr)) return arr;
+    } catch {}
+
+    return null;
+  }
+
+  _matchLabel(text, labels) {
+    const lower = text.toLowerCase().replace(/["`'.\s]/g, '');
+    for (const l of labels) {
+      if (lower.includes(l.toLowerCase())) return l;
+    }
+    return labels[0];
   }
 
   /**

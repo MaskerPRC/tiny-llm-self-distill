@@ -21,23 +21,27 @@ class ClaudeService {
       messages,
       temperature,
     };
-    const useNewTokenParam = /^(gpt-|o[1-9]|claude-)/.test(this.model);
-    if (useNewTokenParam) {
+    if (/^(gpt-|o[1-9])/.test(this.model)) {
       body.max_completion_tokens = maxTokens;
     } else {
       body.max_tokens = maxTokens;
     }
 
-    const response = await axios.post(`${this.apiBase}/chat/completions`, body, {
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://tinybert-pipeline.local',
-      },
-      timeout: 180000,
-    });
-
-    return response.data.choices[0].message.content;
+    try {
+      const response = await axios.post(`${this.apiBase}/chat/completions`, body, {
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://tinybert-pipeline.local',
+        },
+        timeout: 180000,
+      });
+      return response.data.choices[0].message.content;
+    } catch (err) {
+      const detail = err.response?.data?.error?.message || err.response?.data || err.message;
+      console.error(`[Claude] API ${err.response?.status}: ${typeof detail === 'object' ? JSON.stringify(detail) : detail}`);
+      throw err;
+    }
   }
 
   /**

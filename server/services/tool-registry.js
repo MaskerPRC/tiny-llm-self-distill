@@ -24,7 +24,9 @@ class ToolRegistry {
   }
 
   _registerInMemory(toolRow) {
-    const config = toolRow.config ? JSON.parse(toolRow.config) : {};
+    const config = !toolRow.config ? {}
+      : typeof toolRow.config === 'string' ? JSON.parse(toolRow.config)
+      : toolRow.config;
     this.tools.set(toolRow.name, {
       id: toolRow.id,
       name: toolRow.name,
@@ -41,28 +43,42 @@ class ToolRegistry {
   async register(toolInfo) {
     const db = getDB();
     const { v4: uuidv4 } = require('uuid');
-    const id = uuidv4();
 
-    db.prepare(`
-      INSERT INTO tools (id, name, description, task_type, model_arch, model_path, onnx_path, accuracy, status, config)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
-    `).run(
-      id,
-      toolInfo.name,
-      toolInfo.description,
-      toolInfo.taskType,
-      toolInfo.modelArch,
-      toolInfo.modelPath || null,
-      toolInfo.onnxPath || null,
-      toolInfo.accuracy || null,
-      JSON.stringify(toolInfo.config || {}),
-    );
+    const existing = db.prepare('SELECT id FROM tools WHERE name = ?').get(toolInfo.name);
+    let id;
+
+    if (existing) {
+      id = existing.id;
+      db.prepare(`
+        UPDATE tools SET description=?, task_type=?, model_arch=?, model_path=?, onnx_path=?, accuracy=?, status='active', config=?, updated_at=datetime('now')
+        WHERE name=?
+      `).run(
+        toolInfo.description,
+        toolInfo.taskType,
+        toolInfo.modelArch,
+        toolInfo.modelPath || null,
+        toolInfo.onnxPath || null,
+        toolInfo.accuracy || null,
+        JSON.stringify(toolInfo.config || {}),
+        toolInfo.name,
+      );
+    } else {
+      id = uuidv4();
+      db.prepare(`
+        INSERT INTO tools (id, name, description, task_type, model_arch, model_path, onnx_path, accuracy, status, config)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+      `).run(
+        id, toolInfo.name, toolInfo.description, toolInfo.taskType, toolInfo.modelArch,
+        toolInfo.modelPath || null, toolInfo.onnxPath || null, toolInfo.accuracy || null,
+        JSON.stringify(toolInfo.config || {}),
+      );
+    }
 
     const tool = { id, ...toolInfo, status: 'active' };
     this._registerInMemory({ ...tool, task_type: tool.taskType, model_arch: tool.modelArch, model_path: tool.modelPath, onnx_path: tool.onnxPath });
 
     broadcast({ type: 'tool_registered', tool: { id, name: toolInfo.name, taskType: toolInfo.taskType } });
-    console.log(`[ToolRegistry] 注册工具: ${toolInfo.name} (${toolInfo.modelArch})`);
+    console.log(`[ToolRegistry] ${existing ? '更新' : '注册'}工具: ${toolInfo.name} (${toolInfo.modelArch})`);
     return tool;
   }
 

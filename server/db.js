@@ -51,16 +51,6 @@ function initDB() {
       FOREIGN KEY (tool_id) REFERENCES tools(id)
     );
 
-    CREATE TABLE IF NOT EXISTS training_data (
-      id TEXT PRIMARY KEY,
-      job_id TEXT NOT NULL,
-      input_text TEXT NOT NULL,
-      label TEXT NOT NULL,
-      source TEXT DEFAULT 'gemini',
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (job_id) REFERENCES training_jobs(id)
-    );
-
     CREATE TABLE IF NOT EXISTS loop_versions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       version TEXT NOT NULL,

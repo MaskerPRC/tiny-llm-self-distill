@@ -70,8 +70,14 @@ class GeminiService {
       model,
       messages,
       temperature,
-      max_tokens: maxTokens,
     };
+
+    const useNewTokenParam = /^(gpt-|o[1-9]|claude-)/.test(model);
+    if (useNewTokenParam) {
+      body.max_completion_tokens = maxTokens;
+    } else {
+      body.max_tokens = maxTokens;
+    }
 
     if (jsonMode) {
       body.response_format = { type: 'json_object' };

@@ -22,13 +22,20 @@ class IntentService {
     }
     messages.push({ role: 'user', content: userMessage });
 
-    const response = await axios.post(`${this.apiBase}/chat/completions`, {
+    const body = {
       model: this.model,
       messages,
       temperature,
-      max_tokens: maxTokens,
       response_format: { type: 'json_object' },
-    }, {
+    };
+    const useNewTokenParam = /^(gpt-|o[1-9]|claude-)/.test(this.model);
+    if (useNewTokenParam) {
+      body.max_completion_tokens = maxTokens;
+    } else {
+      body.max_tokens = maxTokens;
+    }
+
+    const response = await axios.post(`${this.apiBase}/chat/completions`, body, {
       headers: {
         'Authorization': `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',

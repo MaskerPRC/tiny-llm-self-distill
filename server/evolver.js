@@ -1,4 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const fs = require('fs');
 const { getDB } = require('./db');
 const { broadcast } = require('./ws');
 const { GeminiService } = require('./services/gemini');
@@ -145,15 +147,20 @@ class Evolver {
     const finalLabels = archConfig.labels || labels;
     const trainConfig = archConfig.training_config || {};
 
-    // Step B: Flash 2.5 分批生成训练数据（只生成一次，所有重试共用）
-    this._log(distillId, `📝 B. Flash 2.5 分批生成 ${dataCount} 条训练数据...`);
+    // Step B: Flash 2.5 分批生成训练数据（实时落盘，支持断点续生成）
+    const dataDir = path.join(__dirname, '..', 'data', 'training-data');
+    fs.mkdirSync(dataDir, { recursive: true });
+    const savePath = path.join(dataDir, `${taskType}_${distillId.substring(0, 8)}.jsonl`);
+
+    this._log(distillId, `📝 B. Flash 2.5 生成 ${dataCount} 条训练数据（实时保存: ${path.basename(savePath)}）...`);
     const trainingData = await this.gemini.generateTrainingData(
       description, finalLabels, dataCount,
       (progress) => {
         this._log(distillId, `   [${progress.label}] ${progress.generated}/${progress.target} 条 | 总计 ${progress.totalGenerated}/${progress.totalTarget}`);
-      }
+      },
+      savePath
     );
-    this._log(distillId, `   生成完毕: 共 ${trainingData.length} 条（去重后）`);
+    this._log(distillId, `   生成完毕: 共 ${trainingData.length} 条（去重后），已保存到 ${path.basename(savePath)}`);
 
     if (trainingData.length < 100) {
       throw new Error(`训练数据不足 (${trainingData.length} < 100)`);

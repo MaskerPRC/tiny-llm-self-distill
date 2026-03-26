@@ -3,6 +3,7 @@ const { getDB } = require('./db');
 const { broadcast } = require('./ws');
 const { GeminiService } = require('./services/gemini');
 const { ClaudeService } = require('./services/claude');
+const { SelectorService } = require('./services/selector');
 const { Trainer } = require('./services/trainer');
 
 /**
@@ -23,6 +24,7 @@ class Evolver {
     this.toolRegistry = toolRegistry;
     this.gemini = new GeminiService();
     this.claude = new ClaudeService();
+    this.selector = new SelectorService();
     this.trainer = new Trainer();
     this.isEvolving = false;
   }
@@ -115,119 +117,128 @@ class Evolver {
 
   /**
    * 单个任务的蒸馏流程
+   * GPT-5.4 选型 → Gemini 生数据 → 训练 → 不达标则 GPT-5.4 换更大架构重试
    */
   async distillTask(config) {
-    const { taskType, description, labels, modelArch, dataCount } = config;
+    const { taskType, description, labels, dataCount } = config;
     const distillId = uuidv4();
 
-    this._broadcast('distill_start', { id: distillId, taskType, modelArch });
-    this._log(distillId, `🏭 开始蒸馏: ${taskType} → ${modelArch}`);
+    this._broadcast('distill_start', { id: distillId, taskType });
 
-    // Step A: 使用 Claude 选择/确认模型架构
-    this._log(distillId, '🤖 A. 确认模型架构...');
+    // Step A: GPT-5.4 选择模型架构
+    this._log(distillId, '🧠 A. GPT-5.4 选择模型架构...');
     let archConfig;
     try {
-      archConfig = await this.claude.selectModelArch(description, []);
-      this._log(distillId, `   推荐: ${archConfig.model_arch} (预估大小: ${archConfig.estimated_size_mb}MB)`);
-    } catch {
+      archConfig = await this.selector.selectModelArch(description, []);
+      this._log(distillId, `   GPT-5.4 推荐: ${archConfig.model_arch} | 理由: ${archConfig.reason}`);
+    } catch (err) {
+      this._log(distillId, `   GPT-5.4 选型失败 (${err.message})，使用 tinybert 兜底`);
       archConfig = {
-        model_arch: modelArch,
+        model_arch: 'tinybert',
         labels,
-        training_config: {
-          epochs: parseInt(process.env.TRAIN_EPOCHS) || 5,
-          batch_size: 16,
-          learning_rate: modelArch === 'fasttext' ? 0.1 : 2e-5,
-          max_length: 128,
-        },
+        training_config: { epochs: 5, batch_size: 16, learning_rate: 2e-5, max_length: 128 },
       };
     }
 
-    const finalArch = archConfig.model_arch || modelArch;
     const finalLabels = archConfig.labels || labels;
     const trainConfig = archConfig.training_config || {};
 
-    // Step B: 使用 Gemini 生成训练数据
-    this._log(distillId, `📝 B. 使用 Gemini 生成 ${dataCount} 条训练数据...`);
+    // Step B: Gemini 生成训练数据（只生成一次，所有重试共用）
+    this._log(distillId, `📝 B. Gemini 生成 ${dataCount} 条训练数据...`);
     const trainingData = await this.gemini.generateTrainingData(description, finalLabels, dataCount);
     this._log(distillId, `   生成了 ${trainingData.length} 条数据`);
 
     if (trainingData.length < 100) {
-      throw new Error(`训练数据不足 (${trainingData.length} < 100)，无法训练可靠模型`);
+      throw new Error(`训练数据不足 (${trainingData.length} < 100)`);
     }
 
-    // Step C: 使用 Gemini 对数据进行验证标注（质量控制）
+    // Step C: 验证标注质量
     this._log(distillId, '🏷️ C. 验证标注质量...');
     const sampleSize = Math.min(50, Math.floor(trainingData.length * 0.1));
     const sample = trainingData.slice(0, sampleSize);
     const verified = await this.gemini.labelBatch(
-      sample.map(d => d.text),
-      description,
-      finalLabels
+      sample.map(d => d.text), description, finalLabels
     );
-
     let matchCount = 0;
     for (let i = 0; i < Math.min(verified.length, sample.length); i++) {
       if (verified[i]?.label === sample[i].label) matchCount++;
     }
-    const consistency = matchCount / Math.max(verified.length, 1);
-    this._log(distillId, `   标注一致性: ${(consistency * 100).toFixed(1)}%`);
+    this._log(distillId, `   标注一致性: ${(matchCount / Math.max(verified.length, 1) * 100).toFixed(1)}%`);
 
-    // Step D: 训练模型
-    this._log(distillId, `🏃 D. 开始 ${finalArch} 训练...`);
-    const trainResult = await this.trainer.train({
-      taskType,
-      modelArch: finalArch,
-      trainingData,
-      labels: finalLabels,
-      epochs: trainConfig.epochs || parseInt(process.env.TRAIN_EPOCHS) || 5,
-      batchSize: trainConfig.batch_size || 16,
-      learningRate: trainConfig.learning_rate || 2e-5,
-      maxLength: trainConfig.max_length || 128,
-      valSplit: parseFloat(process.env.TRAIN_VAL_SPLIT) || 0.2,
-    });
-
-    this._log(distillId, `   训练完成! Accuracy: ${trainResult.metrics.accuracy?.toFixed(4)}`);
-
-    // Step E: 检查模型质量
+    // Step D: 训练 → 不达标则让 GPT-5.4 换更大架构重试
     const minAccuracy = 0.85;
-    if (trainResult.metrics.accuracy < minAccuracy) {
-      this._log(distillId, `⚠️ 模型准确率 ${trainResult.metrics.accuracy.toFixed(4)} 低于阈值 ${minAccuracy}，放弃此工具`);
-      throw new Error(`模型准确率不达标: ${trainResult.metrics.accuracy.toFixed(4)} < ${minAccuracy}`);
+    let currentArch = archConfig.model_arch;
+    let currentTrainConfig = trainConfig;
+    let previousAttempt = null;
+    const maxRetries = this.selector.candidates.length;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      this._log(distillId, `🏃 D${attempt > 0 ? ` (第${attempt + 1}次尝试)` : ''}. 训练 ${currentArch}...`);
+
+      const trainResult = await this.trainer.train({
+        taskType,
+        modelArch: currentArch,
+        trainingData,
+        labels: finalLabels,
+        epochs: currentTrainConfig.epochs || parseInt(process.env.TRAIN_EPOCHS) || 5,
+        batchSize: currentTrainConfig.batch_size || 16,
+        learningRate: currentTrainConfig.learning_rate || (currentArch === 'fasttext' ? 0.1 : 2e-5),
+        maxLength: currentTrainConfig.max_length || 128,
+        valSplit: parseFloat(process.env.TRAIN_VAL_SPLIT) || 0.2,
+      });
+
+      const accuracy = trainResult.metrics.accuracy;
+      this._log(distillId, `   训练完成! Accuracy: ${accuracy?.toFixed(4)}`);
+
+      if (accuracy >= minAccuracy) {
+        // 达标，注册工具
+        const toolName = `${taskType}_${currentArch}`;
+        this._log(distillId, `🔧 E. 注册工具: ${toolName}`);
+
+        await this.toolRegistry.register({
+          name: toolName,
+          description: `自动蒸馏的${description}工具 (${currentArch}, acc=${accuracy.toFixed(4)})`,
+          taskType,
+          modelArch: currentArch,
+          modelPath: trainResult.modelPath,
+          onnxPath: trainResult.onnxPath,
+          accuracy,
+          config: {
+            labels: finalLabels,
+            max_length: currentTrainConfig.max_length || 128,
+            threshold: parseFloat(process.env.PREDICT_CONFIDENCE_THRESHOLD) || 0.8,
+          },
+        });
+
+        this._log(distillId, `✅ 蒸馏完成: ${toolName}`);
+        this._broadcast('distill_complete', {
+          id: distillId, toolName, accuracy,
+          modelSize: trainResult.metrics.model_size_mb,
+        });
+
+        return { toolName, metrics: trainResult.metrics, modelPath: trainResult.modelPath, onnxPath: trainResult.onnxPath };
+      }
+
+      // 不达标，让 GPT-5.4 选更大的架构
+      this._log(distillId, `⚠️ ${currentArch} 准确率 ${accuracy.toFixed(4)} 不达标，让 GPT-5.4 重新选型...`);
+      previousAttempt = { arch: currentArch, accuracy: accuracy.toFixed(4) };
+
+      try {
+        const retryConfig = await this.selector.selectModelArch(description, [], previousAttempt);
+        if (retryConfig.model_arch === currentArch) {
+          this._log(distillId, `   GPT-5.4 仍推荐 ${currentArch}，终止重试`);
+          break;
+        }
+        currentArch = retryConfig.model_arch;
+        currentTrainConfig = retryConfig.training_config || {};
+        this._log(distillId, `   GPT-5.4 建议升级到: ${currentArch}`);
+      } catch {
+        this._log(distillId, `   GPT-5.4 重新选型失败，终止重试`);
+        break;
+      }
     }
 
-    // Step F: 注册为工具
-    const toolName = `${taskType}_${finalArch}`;
-    this._log(distillId, `🔧 E. 注册工具: ${toolName}`);
-
-    await this.toolRegistry.register({
-      name: toolName,
-      description: `自动蒸馏的${description}工具 (${finalArch}, acc=${trainResult.metrics.accuracy.toFixed(4)})`,
-      taskType,
-      modelArch: finalArch,
-      modelPath: trainResult.modelPath,
-      onnxPath: trainResult.onnxPath,
-      accuracy: trainResult.metrics.accuracy,
-      config: {
-        labels: finalLabels,
-        max_length: trainConfig.max_length || 128,
-        threshold: parseFloat(process.env.PREDICT_CONFIDENCE_THRESHOLD) || 0.8,
-      },
-    });
-
-    this._log(distillId, `✅ 蒸馏完成: ${toolName}`);
-    this._broadcast('distill_complete', {
-      id: distillId,
-      toolName,
-      accuracy: trainResult.metrics.accuracy,
-      modelSize: trainResult.metrics.model_size_mb,
-    });
-
-    return {
-      toolName,
-      metrics: trainResult.metrics,
-      modelPath: trainResult.modelPath,
-      onnxPath: trainResult.onnxPath,
-    };
+    throw new Error(`所有候选架构均未达到 ${minAccuracy} 准确率`);
   }
 
   /**

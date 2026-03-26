@@ -5,7 +5,8 @@ router.get('/', (req, res) => {
   res.json({
     gemini_model: process.env.GEMINI_MODEL || 'google/gemini-3.1-pro-preview',
     claude_model: process.env.CLAUDE_MODEL || 'anthropic/claude-opus-4.6',
-    default_model_arch: process.env.DEFAULT_MODEL_ARCH || 'tinybert',
+    selector_model: process.env.SELECTOR_MODEL || 'openai/gpt-5.4',
+    model_candidates: (process.env.MODEL_CANDIDATES || 'fasttext,tinybert,minilm,distilbert').split(',').map(s => s.trim()),
     evolve_min_requests: parseInt(process.env.EVOLVE_MIN_REQUESTS) || 50,
     evolve_pattern_threshold: parseFloat(process.env.EVOLVE_PATTERN_THRESHOLD) || 0.3,
     predict_confidence_threshold: parseFloat(process.env.PREDICT_CONFIDENCE_THRESHOLD) || 0.8,

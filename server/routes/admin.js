@@ -102,7 +102,6 @@ router.post('/evolve/distill', async (req, res) => {
       taskType,
       description,
       labels: Array.isArray(labels) ? labels : labels.split(',').map(s => s.trim()),
-      modelArch: modelArch || process.env.DEFAULT_MODEL_ARCH || 'tinybert',
       dataCount: dataCount || parseInt(process.env.TRAIN_DATA_COUNT) || 5000,
     }).catch(err => {
       console.error(`[Distill] 蒸馏 "${taskType}" 失败:`, err.message);

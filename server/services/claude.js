@@ -113,43 +113,6 @@ ${toolDescs}
   }
 
   /**
-   * 分析用户的进化意图，拆解为可执行的计划
-   */
-  async analyzeIntent(intentText, currentTools, currentCode) {
-    const systemPrompt = `你是一个AI系统架构师。用户会用自然语言描述他们想让系统增加的能力或行为。
-你需要分析这个意图，判断实现它需要哪些步骤。
-
-返回 JSON：
-{
-  "summary": "一句话概括用户意图",
-  "needs_model": true/false,
-  "model_task": {
-    "task_type": "英文snake_case任务标识",
-    "description": "任务描述（给数据生成用）",
-    "labels": ["标签1", "标签2"]
-  },
-  "loop_instruction": "给代码生成器的指令：描述在 loop.js 中要实现什么逻辑，包括判断条件、走哪个工具、返回什么内容。尽量具体，包含用户提到的固定回复文本。",
-  "reason": "为什么这样拆解"
-}
-
-判断规则：
-- 如果意图涉及"分类/识别/判断"某种模式（如情感、意图、恶意、语言类型等），needs_model = true
-- 如果只是纯逻辑修改（如改默认回复、加固定条件），needs_model = false，此时 model_task 为 null
-- loop_instruction 必须足够具体，让代码生成器能直接据此写出代码`;
-
-    const toolsDesc = currentTools.length
-      ? `当前已有工具：\n${currentTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}`
-      : '当前没有已注册工具';
-
-    const response = await this.chat(
-      `用户进化意图：「${intentText}」\n\n${toolsDesc}\n\n当前 loop.js 行数：${currentCode.split('\n').length} 行`,
-      { systemPrompt, temperature: 0.1 }
-    );
-
-    return this._extractJSON(response);
-  }
-
-  /**
    * 根据意图指令生成新版 loop.js（支持用户自定义行为）
    */
   async generateLoopCodeWithIntent(currentCode, allTools, intentInstruction, reason) {

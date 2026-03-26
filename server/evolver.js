@@ -4,6 +4,7 @@ const { broadcast } = require('./ws');
 const { GeminiService } = require('./services/gemini');
 const { ClaudeService } = require('./services/claude');
 const { SelectorService } = require('./services/selector');
+const { IntentService } = require('./services/intent');
 const { Trainer } = require('./services/trainer');
 
 /**
@@ -25,6 +26,7 @@ class Evolver {
     this.gemini = new GeminiService();
     this.claude = new ClaudeService();
     this.selector = new SelectorService();
+    this.intent = new IntentService();
     this.trainer = new Trainer();
     this.isEvolving = false;
   }
@@ -250,24 +252,37 @@ class Evolver {
     this._broadcast('intent_start', { id: intentId, intent: intentText });
     this._log(intentId, `🎯 收到进化意图: "${intentText}"`);
 
-    // Step 1: Claude 分析意图
-    this._log(intentId, '🧠 Step 1: Claude 分析意图...');
+    // Step 1: GPT-5.4 分析意图
+    this._log(intentId, '🧠 Step 1: GPT-5.4 分析进化意图...');
     const currentCode = this.loopManager.getCurrentCode();
     const currentTools = this.toolRegistry.list();
-    const plan = await this.claude.analyzeIntent(intentText, currentTools, currentCode);
 
-    this._log(intentId, `   分析结果: ${plan.summary}`);
-    this._log(intentId, `   需要训练模型: ${plan.needs_model ? '是' : '否'}`);
+    let plan;
+    try {
+      plan = await this.intent.analyzeIntent(intentText, currentTools, currentCode);
+    } catch (err) {
+      this._log(intentId, `   GPT-5.4 分析失败: ${err.message}，使用原始意图直接生成代码`);
+      plan = {};
+    }
+
+    const summary = plan.summary || plan.description || intentText;
+    const needsModel = plan.needs_model === true;
+    const loopInstruction = plan.loop_instruction || plan.instruction || plan.code_instruction || intentText;
+
+    this._log(intentId, `   分析结果: ${summary}`);
+    this._log(intentId, `   需要训练模型: ${needsModel ? '是' : '否'}`);
+    if (plan.reason) this._log(intentId, `   理由: ${plan.reason}`);
 
     // Step 2: 如果需要小模型，先蒸馏
     let newToolName = null;
-    if (plan.needs_model && plan.model_task) {
-      this._log(intentId, `\n🏭 Step 2: 蒸馏 "${plan.model_task.task_type}"...`);
+    if (needsModel && plan.model_task) {
+      const mt = plan.model_task;
+      this._log(intentId, `\n🏭 Step 2: 蒸馏 "${mt.task_type}" (${mt.labels?.join(', ')})...`);
       try {
         const distillResult = await this.distillTask({
-          taskType: plan.model_task.task_type,
-          description: plan.model_task.description,
-          labels: plan.model_task.labels,
+          taskType: mt.task_type,
+          description: mt.description,
+          labels: mt.labels,
           dataCount: parseInt(process.env.TRAIN_DATA_COUNT) || 5000,
         });
         newToolName = distillResult.toolName;
@@ -279,27 +294,28 @@ class Evolver {
       this._log(intentId, '\n📝 Step 2: 无需训练模型，跳过蒸馏');
     }
 
-    // Step 3: Claude 根据意图指令生成新 loop.js
+    // Step 3: Claude 根据意图 + 指令生成新 loop.js
     this._log(intentId, '\n🔧 Step 3: Claude 生成新流程代码...');
     const allTools = this.toolRegistry.list();
-    const reason = `用户意图: ${plan.summary}`;
+
+    const fullInstruction = `用户原始意图：「${intentText}」\n\n具体实现指令：${loopInstruction}`;
 
     const newCode = await this.claude.generateLoopCodeWithIntent(
-      currentCode, allTools, plan.loop_instruction, reason
+      currentCode, allTools, fullInstruction, `用户意图: ${summary}`
     );
 
     // Step 4: 双缓冲替换
     this._log(intentId, '🔄 Step 4: 双缓冲替换...');
     try {
-      const result = await this.loopManager.updateLoop(newCode, `意图进化: ${plan.summary}`);
+      const result = await this.loopManager.updateLoop(newCode, `意图进化: ${summary}`);
       this._log(intentId, `✅ Loop 已更新到 v${result.version}`);
     } catch (err) {
       this._log(intentId, `❌ Loop 更新失败: ${err.message}`);
       throw err;
     }
 
-    this._saveEvolutionLog(intentId, { intent: intentText, plan }, null, 'intent_evolve', 'success');
-    this._broadcast('intent_complete', { id: intentId, version: this.loopManager.getCurrentVersion() });
+    this._saveEvolutionLog(intentId, { intent: intentText, summary, plan }, null, 'intent_evolve', 'success');
+    this._broadcast('intent_complete', { id: intentId, summary, version: this.loopManager.getCurrentVersion() });
     this._log(intentId, `\n✅ 意图进化完成!`);
 
     return { status: 'success', plan, newToolName, version: this.loopManager.getCurrentVersion() };

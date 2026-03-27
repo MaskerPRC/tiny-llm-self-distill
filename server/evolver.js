@@ -157,20 +157,22 @@ class Evolver {
 
         // Step 2A: 选择架构
         if (this._shouldRun(startStep, STEPS.INTENT_DISTILL_ARCH)) {
-          this._log(taskId, `\n🏭 Step 2A: GPT-5.4 选择模型架构 (${mt.task_type})...`);
+          this._log(taskId, `\n🏭 Step 2A: GPT-5.4 选择任务模式+模型架构 (${mt.task_type})...`);
           let archConfig;
           try {
             archConfig = await this.selector.selectModelArch(mt.description, []);
-            this._log(taskId, `   推荐: ${archConfig.model_arch} | ${archConfig.reason}`);
+            this._log(taskId, `   推荐: ${archConfig.task_mode || 'classify'} + ${archConfig.model_arch} | ${archConfig.reason}`);
           } catch (err) {
-            this._log(taskId, `   选型失败，使用 tinybert 兜底`);
+            this._log(taskId, `   选型失败，使用 classify + tinybert 兜底`);
             archConfig = {
+              task_mode: 'classify',
               model_arch: 'tinybert',
               labels: mt.labels,
               training_config: { epochs: 5, batch_size: 16, learning_rate: 2e-5, max_length: 128 },
             };
           }
 
+          state.taskMode = archConfig.task_mode || mt.task_mode || 'classify';
           state.archConfig = archConfig;
           state.finalLabels = archConfig.labels || mt.labels;
           state.trainConfig = archConfig.training_config || {};
@@ -187,10 +189,11 @@ class Evolver {
         // Step 2B: 生成训练数据
         if (this._shouldRun(startStep, STEPS.INTENT_DISTILL_DATAGEN)) {
           const dataCount = parseInt(process.env.TRAIN_DATA_COUNT) || 5000;
-          this._log(taskId, `\n📝 Step 2B: 生成 ${dataCount} 条训练数据（${path.basename(state.savePath)}）...`);
+          const taskMode = state.taskMode || 'classify';
+          this._log(taskId, `\n📝 Step 2B: 生成 ${dataCount} 条 ${taskMode} 训练数据（${path.basename(state.savePath)}）...`);
 
-          const trainingData = await this.gemini.generateTrainingData(
-            mt.description, state.finalLabels, dataCount,
+          const trainingData = await this.gemini.generateTrainingDataByMode(
+            taskMode, mt.description, state.finalLabels, dataCount,
             (progress) => {
               this._log(taskId, `   [${progress.label}] ${progress.generated}/${progress.target} | 总计 ${progress.totalGenerated}/${progress.totalTarget}`);
             },
@@ -213,22 +216,37 @@ class Evolver {
 
         // Step 2C: 验证标注质量
         if (state.needsModel && this._shouldRun(startStep, STEPS.INTENT_DISTILL_VERIFY)) {
-          this._log(taskId, '\n🏷️ Step 2C: 验证标注质量...');
+          const taskMode = state.taskMode || 'classify';
+          this._log(taskId, `\n🏷️ Step 2C: 验证数据质量 (${taskMode})...`);
           const trainingData = this._loadTrainingData(state.savePath);
-          const sampleSize = Math.min(50, Math.floor(trainingData.length * 0.1));
-          const sample = trainingData.slice(0, sampleSize);
 
-          try {
-            const verified = await this.gemini.labelBatch(
-              sample.map(d => d.text), mt.description, state.finalLabels
-            );
-            let matchCount = 0;
-            for (let i = 0; i < Math.min(verified.length, sample.length); i++) {
-              if (verified[i]?.label === sample[i].label) matchCount++;
+          if (taskMode === 'classify') {
+            const sampleSize = Math.min(50, Math.floor(trainingData.length * 0.1));
+            const sample = trainingData.slice(0, sampleSize);
+            try {
+              const verified = await this.gemini.labelBatch(
+                sample.map(d => d.text), mt.description, state.finalLabels
+              );
+              let matchCount = 0;
+              for (let i = 0; i < Math.min(verified.length, sample.length); i++) {
+                if (verified[i]?.label === sample[i].label) matchCount++;
+              }
+              this._log(taskId, `   标注一致性: ${(matchCount / Math.max(verified.length, 1) * 100).toFixed(1)}%`);
+            } catch (err) {
+              this._log(taskId, `   标注验证失败 (${err.message})，跳过`);
             }
-            this._log(taskId, `   标注一致性: ${(matchCount / Math.max(verified.length, 1) * 100).toFixed(1)}%`);
-          } catch (err) {
-            this._log(taskId, `   标注验证失败 (${err.message})，跳过`);
+          } else if (taskMode === 'ner') {
+            const withEntities = trainingData.filter(d => d.entities?.length > 0).length;
+            this._log(taskId, `   NER: ${withEntities}/${trainingData.length} 条含实体标注`);
+          } else if (taskMode === 'similarity') {
+            const valid = trainingData.filter(d => d.text_a && d.text_b).length;
+            this._log(taskId, `   Similarity: ${valid}/${trainingData.length} 条有效句子对`);
+          } else if (taskMode === 'regression') {
+            const scores = trainingData.filter(d => typeof d.score === 'number').map(d => d.score);
+            if (scores.length > 0) {
+              const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+              this._log(taskId, `   Regression: ${scores.length} 条, 均分 ${avg.toFixed(3)}, 范围 [${Math.min(...scores).toFixed(2)}, ${Math.max(...scores).toFixed(2)}]`);
+            }
           }
 
           this._saveTask(taskId, { current_step: STEPS.INTENT_DISTILL_TRAIN, state });
@@ -241,10 +259,12 @@ class Evolver {
           const currentArch = state.archConfig.model_arch;
           const tc = state.trainConfig;
 
-          this._log(taskId, `\n🏃 Step 2D: 训练 ${currentArch}...`);
+          const taskMode = state.taskMode || 'classify';
+          this._log(taskId, `\n🏃 Step 2D: 训练 ${currentArch} (${taskMode})...`);
 
           const trainResult = await this.trainer.train({
             taskType: mt.task_type,
+            taskMode,
             modelArch: currentArch,
             trainingData,
             labels: state.finalLabels,
@@ -272,15 +292,17 @@ class Evolver {
           const toolName = `${mt.task_type}_${state.archConfig.model_arch}`;
           this._log(taskId, `\n🔧 Step 2E: 注册工具 ${toolName}...`);
 
+          const taskMode = state.taskMode || 'classify';
           await this.toolRegistry.register({
             name: toolName,
-            description: `${mt.description} (${state.archConfig.model_arch}, acc=${state.trainResult.accuracy?.toFixed(4)})`,
+            description: `${mt.description} (${taskMode}/${state.archConfig.model_arch}, acc=${state.trainResult.accuracy?.toFixed(4)})`,
             taskType: mt.task_type,
             modelArch: state.archConfig.model_arch,
             modelPath: state.trainResult.modelPath,
             onnxPath: state.trainResult.onnxPath,
             accuracy: state.trainResult.accuracy,
             config: {
+              task_mode: taskMode,
               labels: state.finalLabels,
               max_length: (state.trainConfig || {}).max_length || 128,
               threshold: parseFloat(process.env.PREDICT_CONFIDENCE_THRESHOLD) || 0.8,

@@ -64,18 +64,25 @@ class IntentService {
   "needs_model": true或false,
   "model_task": {
     "task_type": "英文snake_case任务标识",
+    "task_mode": "classify|ner|similarity|regression",
     "description": "任务描述（给数据生成用）",
-    "labels": ["标签1", "标签2"]
+    "labels": ["标签列表：classify用分类标签，ner用实体类型（如PER/LOC/ORG），similarity用关系标签"]
   },
   "loop_instruction": "给代码生成器的详细指令：描述在 loop.js 的 process 函数中要实现什么逻辑，包括判断条件、走哪个工具、返回什么内容。必须包含用户提到的固定回复文本原文。",
   "reason": "为什么这样拆解"
 }
 
-判断规则：
-- 如果意图涉及需要AI来"分类/识别/判断"某种模式（如情感、意图、恶意、语言类型等），needs_model = true
-- 如果只是纯逻辑修改（如改默认回复、加固定条件、关键词过滤），needs_model = false，此时 model_task 设为 null
-- loop_instruction 字段极其重要，必须足够具体，让另一个模型能仅凭此字段写出完整的代码
-- 如果 needs_model 为 true，loop_instruction 中要说明使用哪个 tool 名称（格式: {task_type}_{model_arch}）`;
+task_mode 判断规则：
+- classify: 判断文本属于哪个类别（情感、意图、恶意等）
+- ner: 从文本中提取人名/地名/组织/产品等实体
+- similarity: 判断两段文本的关系（相似/矛盾/蕴含/问答匹配）
+- regression: 给文本打一个连续分数（质量/严重度/相关性 0~1）
+
+needs_model 判断规则：
+- 如果意图涉及AI来"分类/识别/判断/提取/打分"某种模式，needs_model = true
+- 如果只是纯逻辑修改（改默认回复、加固定条件、关键词过滤），needs_model = false，model_task 设为 null
+- loop_instruction 极其重要，必须足够具体
+- 如果 needs_model 为 true，loop_instruction 中要说明 tool 名称（格式: {task_type}_{model_arch}）和该 tool 的 task_mode`;
 
     const toolsDesc = currentTools.length
       ? `当前已有工具：\n${currentTools.map(t => `- ${t.name}: ${t.description}`).join('\n')}`

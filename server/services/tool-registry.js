@@ -107,6 +107,7 @@ class ToolRegistry {
       name: t.name,
       description: t.description,
       taskType: t.taskType,
+      taskMode: t.config?.task_mode || 'classify',
       modelArch: t.modelArch,
       accuracy: t.accuracy,
       labels: t.config?.labels || [],

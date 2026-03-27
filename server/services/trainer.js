@@ -78,14 +78,17 @@ class Trainer {
   }
 
   async _runTraining(jobId, jobDir, config) {
-    const scriptMap = {
-      tinybert: 'train_transformer.py',
-      minilm: 'train_transformer.py',
-      distilbert: 'train_transformer.py',
-      fasttext: 'train_fasttext.py',
+    const taskMode = config.taskMode || 'classify';
+    const modeScriptMap = {
+      classify: 'train_transformer.py',
+      ner: 'train_ner.py',
+      similarity: 'train_similarity.py',
+      regression: 'train_regression.py',
     };
+    const archScriptOverride = { fasttext: 'train_fasttext.py' };
 
-    const script = path.join(this.trainingDir, scriptMap[config.modelArch] || 'train_transformer.py');
+    const scriptName = archScriptOverride[config.modelArch] || modeScriptMap[taskMode] || 'train_transformer.py';
+    const script = path.join(this.trainingDir, scriptName);
 
     const modelNameMap = {
       tinybert: process.env.MODEL_TINYBERT || 'hfl/rbt3',
